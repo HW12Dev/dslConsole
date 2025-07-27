@@ -9,6 +9,7 @@
 #include <QFileDialog>
 #include <QVBoxLayout>
 
+typedef QTcpSocket SocketType;
 class MainWindow : public QMainWindow {
 public:
   MainWindow();
@@ -33,7 +34,7 @@ public:
   QTextEdit *commandIn;
   QLineEdit *commandEntry;
 
-  QTcpSocket* consoleSock = nullptr;
+  SocketType* consoleSock = nullptr;
   QThread* socket_connection_thread;
 
   QFileDialog* save_file_dialog;

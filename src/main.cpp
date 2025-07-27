@@ -1,6 +1,9 @@
 #define WIN32_LEAN_AND_MEAN
 #define DIESEL_CONSOLE_PORT 20249
 
+// silly testing
+//#define BITSQUID_CONSOLE_PORT 27036
+
 #include <QApplication>
 #include <QThread>
 #include <QTimer>
@@ -12,6 +15,30 @@ QString WRN_COLOUR("#FFFF00");
 QString ERR_COLOUR("#FF0000");
 QString NUL_COLOUR("");
 
+
+void write_u32(QByteArray& arr, uint32_t val)
+{
+  arr.append((char*)&val, sizeof(val));
+}
+uint32_t read_u32(const QByteArray& arr, size_t& offset)
+{
+  uint32_t val = _byteswap_ulong(*(uint32_t*)(arr.data() + offset));
+  offset += sizeof(val);
+  return val;
+}
+std::string read_string(const QByteArray& arr, size_t& offset)
+{
+  auto size = read_u32(arr, offset);
+
+  if (size > arr.length() || size > 10000) // really bad hack
+    return "Malformed message";
+
+  std::string str = std::string(arr.data() + offset, arr.data() + offset + size);
+  offset += size;
+  return str;
+}
+
+
 void MainWindow::SockConnected() {
   AddToCommandIn("Connected to game socket\n");
 }
@@ -21,13 +48,29 @@ void MainWindow::SockDisconnected() {
 }
 
 void MainWindow::ReadReady() {
-  QString raw_to_write = consoleSock->readAll();
+  QByteArray raw_to_write = consoleSock->readAll();
 
-  AddToCommandIn(raw_to_write);
+  size_t offset = 0;
+
+  try {
+
+    while (offset < raw_to_write.length() - 1) {
+
+      offset += 8; // packet size?
+
+      std::string log_level = read_string(raw_to_write, offset);
+      std::string message = read_string(raw_to_write, offset);
+
+      AddToCommandIn(QString("[") + log_level.c_str() + "] " + message.c_str());
+    }
+  }
+  catch (const char* e) {
+    AddToCommandIn(raw_to_write);
+  }
 }
 
-void MainWindow::SocketStateChanged(QTcpSocket::SocketState state) {
-  if (state == QTcpSocket::SocketState::UnconnectedState) {
+void MainWindow::SocketStateChanged(SocketType::SocketState state) {
+  if (state == SocketType::SocketState::UnconnectedState) {
     this->SetupSocketConnection();
   }
 }
@@ -44,13 +87,16 @@ void MainWindow::AddToCommandIn(QString to_add) {
 
 void MainWindow::SetupSocketConnection() {
   if (consoleSock == nullptr) {
-    consoleSock = new QTcpSocket();
+    consoleSock = new SocketType();
+    const uint64_t receiveBufferSize = 65536 * 4;
+    consoleSock->setReadBufferSize(receiveBufferSize);
+    consoleSock->setSocketOption(SocketType::ReceiveBufferSizeSocketOption, receiveBufferSize);
 
-    connect(consoleSock, &QTcpSocket::connected, this, &MainWindow::SockConnected);
-    connect(consoleSock, &QTcpSocket::disconnected, this, &MainWindow::SockDisconnected);
-    connect(consoleSock, &QTcpSocket::bytesWritten, this, &MainWindow::BytesWritten);
-    connect(consoleSock, &QTcpSocket::readyRead, this, &MainWindow::ReadReady);
-    connect(consoleSock, &QTcpSocket::stateChanged, this, &MainWindow::SocketStateChanged);
+    connect(consoleSock, &SocketType::connected, this, &MainWindow::SockConnected);
+    connect(consoleSock, &SocketType::disconnected, this, &MainWindow::SockDisconnected);
+    connect(consoleSock, &SocketType::bytesWritten, this, &MainWindow::BytesWritten);
+    connect(consoleSock, &SocketType::readyRead, this, &MainWindow::ReadReady);
+    connect(consoleSock, &SocketType::stateChanged, this, &MainWindow::SocketStateChanged);
   }
   
   consoleSock->connectToHost("127.0.0.1", DIESEL_CONSOLE_PORT);
@@ -60,8 +106,32 @@ void MainWindow::SetupSocketConnection() {
   }*/
 }
 
+// dsl::ConsoleProtocol::MESSAGE_TYPE
+enum ChunkMessageType : uint32_t {
+  TEXT = 0,
+  EXECUTE_COMMAND = 1,
+  NULL_MESSAGE = 2,
+  HASH_PAIR = 3,
+  UNFINISHED_MESSAGE = 4
+};
+
+// dsl::ConsoleServer::handle_chunk
+// dsl::ConsoleIOPort::nibble_chunk
+
 void MainWindow::SubmitCommand() {
-  consoleSock->write(commandEntry->text().toLocal8Bit());
+  QByteArray cmd;
+
+  auto text = commandEntry->text().toLocal8Bit();
+
+  write_u32(cmd, _byteswap_ulong(EXECUTE_COMMAND)); // chunk type
+  write_u32(cmd, _byteswap_ulong(text.length() + sizeof(uint32_t))); // bytes expected: text length + u32 that stores it's actual size
+  write_u32(cmd, _byteswap_ulong(text.length()));
+
+  cmd.append(text);
+
+
+  consoleSock->write(cmd);
+
   commandEntry->setText("");
 }
 
@@ -122,7 +192,7 @@ MainWindow::MainWindow() {
   verticalLayout->addWidget(commandEntry);
 
 
-  this->setStyleSheet(QString(
+  /*this->setStyleSheet(QString(
     "* {"
     "color: #eef3ef"
     "}"
@@ -138,7 +208,7 @@ MainWindow::MainWindow() {
     "QLineEdit {"
     "background-color: #2a2c29;"
     "}"
-  ));
+  ));*/
 
   this->SetupSocketConnection();
 }
